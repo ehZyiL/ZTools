@@ -18,6 +18,7 @@ import type { GlobalShortcutPreparation } from '../index'
 import api from '../index'
 import databaseAPI from '../shared/database'
 import { normalizeCompactMainWindowHeader } from '../../../shared/mainWindowLayout'
+import { normalizeShortcutAccelerator } from '../../utils/shortcutAccelerator'
 import detachedWindowManager from '../../core/detachedWindowManager'
 
 /**
@@ -145,8 +146,10 @@ export class SettingsAPI {
     target: string,
     preparation: GlobalShortcutPreparation
   ): boolean {
-    globalShortcut.unregister(shortcut)
-    return globalShortcut.register(shortcut, () => {
+    // 统一改写为当前平台可解析的加速器，避免 Linux/Windows 上注册直接返回 false。
+    const accelerator = normalizeShortcutAccelerator(shortcut)
+    globalShortcut.unregister(accelerator)
+    return globalShortcut.register(accelerator, () => {
       console.log(`全局快捷键触发: ${shortcut} -> ${target}`)
       void this.triggerGlobalShortcut(shortcut, preparation)
     })
@@ -177,7 +180,7 @@ export class SettingsAPI {
       return
     }
 
-    globalShortcut.unregister(shortcut)
+    globalShortcut.unregister(normalizeShortcutAccelerator(shortcut))
   }
 
   // 重新应用某个快捷键配置，必要时切换 Electron/native 后端。
@@ -488,7 +491,7 @@ export class SettingsAPI {
       }
 
       if (this.shouldUseNativeOptimizedShortcut(shortcut, preScreenshotOptimization)) {
-        globalShortcut.unregister(shortcut)
+        globalShortcut.unregister(normalizeShortcutAccelerator(shortcut))
         try {
           this.registerNativeOptimizedShortcut(shortcut)
           console.log(`成功注册 native 优化快捷键: ${shortcut} -> ${target}`)
@@ -819,8 +822,11 @@ export class SettingsAPI {
         this.cleanupRecordingShortcuts()
       }
 
-      // 定义需要临时注册的快捷键（常见的快捷键组合）
-      const commonShortcuts = ['Alt+Space', 'Option+Space']
+      // 定义需要临时注册的快捷键：Linux/Windows 使用 Alt/Ctrl，macOS 使用 Command/Option
+      const commonShortcuts =
+        process.platform === 'darwin'
+          ? ['Command+Space', 'Option+Space']
+          : ['Alt+Space', 'Ctrl+Space']
 
       // 注册所有快捷键
       for (const shortcut of commonShortcuts) {

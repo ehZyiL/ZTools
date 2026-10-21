@@ -150,20 +150,20 @@ const terminalOptions = computed(() => {
 
 // 默认快捷键（根据平台区分文案）
 const defaultHotkey = computed(() => {
-  return platform.value === 'win32' ? 'Alt+Z' : 'Option+Z'
+  return platform.value === 'darwin' ? 'Option+Z' : 'Alt+Z'
 })
 
 // 快捷键预设选项（根据平台）
 const hotkeyPresets = computed(() => {
-  if (platform.value === 'win32') {
+  if (platform.value === 'darwin') {
     return [
-      { label: 'Alt + Space', value: 'Alt+Space' },
-      { label: 'Ctrl + Space', value: 'Ctrl+Space' }
+      { label: 'Command + Space', value: 'Command+Space' },
+      { label: 'Option + Space', value: 'Option+Space' }
     ]
   }
   return [
-    { label: 'Command + Space', value: 'Command+Space' },
-    { label: 'Option + Space', value: 'Option+Space' }
+    { label: 'Alt + Space', value: 'Alt+Space' },
+    { label: 'Ctrl + Space', value: 'Ctrl+Space' }
   ]
 })
 

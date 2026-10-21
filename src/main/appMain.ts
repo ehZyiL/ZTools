@@ -52,8 +52,18 @@ app.on('second-instance', (_event, argv) => {
 
   if (focusAccessibilityPermissionWindow()) return
 
+  // 桌面环境快捷键（GNOME 自定义绑定）通过 --toggle 触发，需要切换而不是单纯显示。
+  const shouldToggle = argv.includes('--toggle')
+
   // 当运行第二个实例时，焦点聚焦到这个实例
-  if (applicationInitialized) windowManager.showWindow()
+  if (applicationInitialized) {
+    if (shouldToggle) {
+      console.log('[Main] 桌面快捷键请求切换窗口')
+      windowManager.toggleWindowVisibility()
+    } else {
+      windowManager.showWindow()
+    }
+  }
 })
 
 // macOS: 监听文件打开事件（双击 .zpx 文件或拖拽到 Dock 图标）

@@ -10,6 +10,7 @@ import {
   Tray
 } from 'electron'
 import { getPreloadPath, getRendererPath } from '../utils/appBundlePath'
+import { isWaylandSession, normalizeShortcutAccelerator } from '../utils/shortcutAccelerator'
 // import trayIconLight from '../../../resources/icons/trayTemplate@2x-light.png?asset'
 import trayIcon from '../../../resources/icons/trayTemplate@2x.png?asset'
 import windowsIcon from '../../../resources/icons/windows-icon.png?asset'
@@ -21,6 +22,11 @@ import doubleTapManager from '../core/doubleTapManager.js'
 import globalInputManager from '../core/globalInputManager.js'
 import { WindowManager as NativeWindowManager } from '../core/native/index.js'
 import clipboardManager from './clipboardManager'
+import {
+  installGnomeCustomShortcut,
+  isGnomeSession,
+  removeGnomeCustomShortcut
+} from '../core/gnomeShortcut'
 
 import { WINDOW_DEFAULT_HEIGHT, WINDOW_WIDTH } from '../common/constants'
 import detachedWindowManager from '../core/detachedWindowManager'
@@ -65,7 +71,7 @@ class WindowManager {
   private mainWindow: BrowserWindow | null = null
   private tray: Tray | null = null
   private trayMenu: Menu | null = null // 托盘菜单
-  private currentShortcut = 'Option+Z' // 当前注册的快捷键
+  private currentShortcut = platform.isMacOS ? 'Option+Z' : 'Alt+Z' // 当前注册的快捷键
   private isDoubleTapMode = false // 当前呼出快捷键是否为双击修饰键模式
   private static readonly MODIFIER_NAMES = ['Command', 'Ctrl', 'Alt', 'Option', 'Shift']
   private isQuitting = false // 是否正在退出应用
@@ -748,10 +754,11 @@ class WindowManager {
    * 注册全局快捷键（支持双击修饰键）
    */
   public registerShortcut(shortcut?: string): boolean {
-    const keyToRegister = shortcut || this.currentShortcut
+    // 注册前统一改写修饰键：Linux/Windows 无法解析 macOS 的 Option/Command 名称。
+    const keyToRegister = normalizeShortcutAccelerator(shortcut || this.currentShortcut)
 
     // 保存旧的快捷键信息，用于注册失败时回滚
-    const oldShortcut = this.currentShortcut
+    const oldShortcut = normalizeShortcutAccelerator(this.currentShortcut)
     const oldIsDoubleTapMode = this.isDoubleTapMode
 
     // 注销旧的呼出快捷键（仅注销当前快捷键，不影响其他全局快捷键）
@@ -759,8 +766,11 @@ class WindowManager {
       const oldModifier = this.currentShortcut.split('+')[0]
       doubleTapManager.unregister(oldModifier)
     } else {
-      globalShortcut.unregister(this.currentShortcut)
+      globalShortcut.unregister(oldShortcut)
     }
+
+    // 同时撤销 GNOME 自定义快捷键，避免两套绑定同时生效或残留旧键位。
+    if (isGnomeSession()) removeGnomeCustomShortcut()
 
     // 双击修饰键模式：通过 doubleTapManager 注册
     if (this.isDoubleTapShortcut(keyToRegister)) {
@@ -774,13 +784,30 @@ class WindowManager {
       return true
     }
 
+    // Wayland 下 X11 抓键收不到原生 Wayland 窗口的按键，改由桌面环境自己绑定快捷键。
+    if (this.tryRegisterViaGnomeShortcut(keyToRegister)) {
+      this.currentShortcut = keyToRegister
+      this.isDoubleTapMode = false
+      return true
+    }
+
     // 普通快捷键模式：通过 globalShortcut 注册
     const ret = globalShortcut.register(keyToRegister, () => {
       if (!dndManager.shouldIgnoreHotkeys()) this.toggleWindow()
     })
 
     if (!ret) {
-      console.error(`快捷键注册失败: ${keyToRegister} 已被占用，回滚到旧快捷键: ${oldShortcut}`)
+      // 原生 Wayland 会话下 Electron 没有可用的全局按键后端，提示可行的绕开方式。
+      const waylandHint = isWaylandSession()
+        ? '（Wayland 会话下需由桌面环境接管，非 GNOME 桌面暂不支持）'
+        : ''
+      console.error(
+        `快捷键注册失败: ${keyToRegister}${waylandHint}，回滚到旧快捷键: ${oldShortcut}`
+      )
+
+      // 目标与旧快捷键相同时无需重复注册，避免反复触发相同的失败日志。
+      if (oldShortcut === keyToRegister) return false
+
       // 注册失败，回滚：重新注册旧的快捷键
       if (oldIsDoubleTapMode) {
         const oldModifier = oldShortcut.split('+')[0]
@@ -800,6 +827,60 @@ class WindowManager {
     }
 
     return ret
+  }
+
+  /**
+   * 在 Wayland + GNOME 会话下把呼出快捷键交给桌面环境绑定。
+   *
+   * @param accelerator 已归一化的 Electron 加速器字符串。
+   * @returns 成功写入 GNOME 自定义快捷键时返回 true。
+   */
+  private tryRegisterViaGnomeShortcut(accelerator: string): boolean {
+    // 其它平台与 X11 会话仍使用 Electron 自己的全局快捷键。
+    if (!isWaylandSession() || !isGnomeSession()) return false
+
+    if (!installGnomeCustomShortcut(accelerator, this.buildShortcutToggleCommand())) {
+      console.warn('[Window] GNOME 自定义快捷键写入失败，回退到 Electron 全局快捷键')
+      return false
+    }
+
+    console.log(`快捷键 ${accelerator} 已交由 GNOME 自定义快捷键接管`)
+    return true
+  }
+
+  /**
+   * 构造 GNOME 自定义快捷键触发的命令，固定带 --toggle 以切换窗口而不是只显示。
+   *
+   * @returns 可直接写入 GNOME 自定义快捷键的 shell 命令字符串。
+   */
+  private buildShortcutToggleCommand(): string {
+    // 打包后 execPath 就是应用可执行文件；开发态需要补上应用目录作为参数。
+    const parts = [process.execPath]
+    if (!app.isPackaged) parts.push(app.getAppPath())
+    parts.push('--toggle')
+    return parts.map((part) => (part.includes(' ') ? `'${part}'` : part)).join(' ')
+  }
+
+  /**
+   * 切换主窗口显示状态，供桌面环境快捷键（--toggle）复用。
+   *
+   * @returns 无返回值。
+   */
+  public toggleWindowVisibility(): void {
+    // 记录切换前状态，便于排查桌面快捷键是否真的触发了窗口切换。
+    console.log(
+      `[Window] 桌面快捷键切换窗口: visible=${this.mainWindow?.isVisible() ?? false}, focused=${this.mainWindow?.isFocused() ?? false}`
+    )
+
+    // 桌面环境唤起时焦点切换存在延迟，短暂抑制 blur 避免窗口刚显示就被自动隐藏。
+    this.suppressBlurHideTransiently(1200)
+    this.toggleWindow()
+
+    // Wayland 下窗口可能未获得焦点，显式提一次，便于用户直接输入。
+    if (this.mainWindow?.isVisible()) {
+      this.mainWindow.moveTop()
+      this.mainWindow.focus()
+    }
   }
 
   /**
