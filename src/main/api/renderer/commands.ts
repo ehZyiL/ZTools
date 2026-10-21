@@ -69,6 +69,8 @@ export class AppsAPI {
   private isLocalAppSearchEnabled = true
   private afterFirstAppsReadyCallback: (() => void) | null = null
   private hasNotifiedFirstAppsReady = false
+  /** 本次会话是否已尝试过旧格式图标缓存迁移，避免校验条件不满足时反复扫描 */
+  private iconFormatMigrationAttempted = false
   /** 由外部注入，用于在多屏场景下正确显示窗口（跟随光标所在屏幕） */
   private showWindowCallback?: () => void
 
@@ -225,11 +227,12 @@ export class AppsAPI {
    * @returns 系统应用列表；有效缓存存在时直接返回缓存。
    */
   public async getApps(): Promise<any[]> {
-    console.log('[Commands] 收到获取应用列表请求')
+    // 目录重建会频繁调用本方法，逐次调用只保留调试日志。
+    console.debug('[Commands] 收到获取应用列表请求')
 
     // 如果本地应用搜索被禁用，直接返回空列表
     if (!this.isLocalAppSearchEnabled) {
-      console.log('[Commands] 本地应用搜索已关闭，返回空列表')
+      console.debug('[Commands] 本地应用搜索已关闭，返回空列表')
       return []
     }
 
@@ -241,20 +244,24 @@ export class AppsAPI {
       const cacheVersion = databaseAPI.dbGet(AppsAPI.APP_CACHE_VERSION_KEY)
       if (cachedApps && Array.isArray(cachedApps) && cachedApps.length > 0) {
         // 检查缓存的图标格式是否为新协议
-        // 只要有一个应用使用了旧的文件路径格式（且不是 .png 结尾的静态资源），就视为旧缓存
-        const hasOldFormat = cachedApps.some(
-          (app) =>
-            app.icon &&
-            !app.icon.startsWith('ztools-icon://') &&
-            !app.icon.startsWith('data:') &&
-            !app.icon.startsWith('http') &&
-            // Windows 上的静态 png 资源除外（通常是手动转换的）
-            !(
-              process.platform === 'win32' &&
-              app.icon.startsWith('file:') &&
-              app.icon.endsWith('.png')
-            )
-        )
+        // 只要有一个应用使用了旧的文件路径格式（且不是 .png 结尾的静态资源），就视为旧缓存。
+        // Linux 扫描器本身就以 file:// 输出图标（ztools-icon:// 依赖原生提取且不支持 SVG），
+        // 因此旧格式迁移只在 Windows/macOS 上生效，否则会与校验条件互相否定导致反复全量扫描。
+        const hasOldFormat =
+          process.platform !== 'linux' &&
+          cachedApps.some(
+            (app) =>
+              app.icon &&
+              !app.icon.startsWith('ztools-icon://') &&
+              !app.icon.startsWith('data:') &&
+              !app.icon.startsWith('http') &&
+              // Windows 上的静态 png 资源除外（通常是手动转换的）
+              !(
+                process.platform === 'win32' &&
+                app.icon.startsWith('file:') &&
+                app.icon.endsWith('.png')
+              )
+          )
         const hasStaleUwpIcons = process.platform === 'win32' && hasStaleUwpIconCache(cachedApps)
         let hasUwpPackageChanges = false
         if (process.platform === 'win32') {
@@ -275,6 +282,14 @@ export class AppsAPI {
         if (cacheVersion !== AppsAPI.APP_CACHE_VERSION) {
           console.log('[Commands] 检测到旧版应用缓存，将重新扫描以刷新本地化名称索引...')
         } else if (hasOldFormat) {
+          // 迁移只会改写图标协议，重复扫描无法修复不一致的判定条件，第二次起直接使用现有缓存。
+          if (this.iconFormatMigrationAttempted) {
+            console.warn('[Commands] 缓存仍被判定为旧格式图标，跳过重复迁移扫描并继续使用现有缓存')
+            this.notifyFirstAppsReady()
+            return cachedApps
+          }
+
+          this.iconFormatMigrationAttempted = true
           console.log('[Commands] 检测到旧格式图标缓存，将重新扫描并更新为 ztools-icon 协议...')
         } else if (hasStaleUwpIcons || hasUwpPackageChanges) {
           try {
@@ -291,7 +306,8 @@ export class AppsAPI {
             return cachedApps
           }
         } else {
-          console.log(`从缓存读取到 ${cachedApps.length} 个应用`)
+          // 缓存命中在正常使用中每次目录重建都会发生，仅保留调试日志。
+          console.debug(`从缓存读取到 ${cachedApps.length} 个应用`)
           this.notifyFirstAppsReady()
           return cachedApps
         }
