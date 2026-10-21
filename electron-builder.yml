@@ -83,10 +83,34 @@ linux:
   target:
     - AppImage
     - deb
-  maintainer: electronjs.org
+    - rpm
+  # rpm 的 Vendor 由 maintainer 派生，必须写成可读的维护者，邮箱请替换为真实联系方式。
+  maintainer: ZToolsCenter <ZToolsCenter@users.noreply.github.com>
+  vendor: ZToolsCenter
   category: Utility
+  synopsis: 高性能应用启动器与插件平台
+  description: ZTools 是一个高性能、可扩展的应用启动器和插件平台。
 appImage:
   artifactName: ${name}-${version}-${os}-${arch}.${ext}
+rpm:
+  # RPM 包名使用小写，安装目录仍是 /opt/ZTools。
+  packageName: ztools
+  compression: xz
+  # rpm 4.19+ 默认会为可执行文件生成 /usr/lib/.build-id 链接，应用包不需要。
+  fpm:
+    - --rpm-rpmbuild-define
+    - _build_id_links none
+  # 显式列出 Fedora 仓库中的真实包名，避免依赖 fpm 的通用默认值。
+  depends:
+    - gtk3
+    - libnotify
+    - nss
+    - libXScrnSaver
+    - libXtst
+    - xdg-utils
+    - at-spi2-core
+    - libuuid
+    - libsecret
 npmRebuild: false
 
 afterPack: ./build/afterPack.js

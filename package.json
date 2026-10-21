@@ -36,6 +36,7 @@
     "build:linux": "cross-env ZTOOLS_TARGET_PLATFORM=linux pnpm build && electron-builder --linux",
     "build:linux:x64": "cross-env ZTOOLS_TARGET_PLATFORM=linux pnpm build && electron-builder --linux --x64",
     "build:linux:arm64": "cross-env ZTOOLS_TARGET_PLATFORM=linux pnpm build && electron-builder --linux --arm64",
+    "build:linux:rpm": "cross-env ZTOOLS_TARGET_PLATFORM=linux pnpm build && sh scripts/rpmbuild-container.sh electron-builder --linux rpm --publish never",
     "updater": "node scripts/updater.mjs",
     "test": "vitest run",
     "test:e2e": "pnpm exec electron-vite build && playwright test --config=playwright.e2e.config.ts",
